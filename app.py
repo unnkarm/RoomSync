@@ -363,8 +363,8 @@ def render_sidebar():
                 4. Meetings that can't fit anywhere are marked as
                    **conflicts** with a reason.
 
-                Approximate time complexity: **O(M × R)**, where
-                M = number of meetings and R = number of rooms.
+                Complexity: sorting is **O(R log R + M log M)**;
+                allocation uses capacity and booking binary searches.
                 """
             )
 
@@ -562,39 +562,44 @@ def compute_room_utilization(rooms_df, schedule_df):
     The "day span" is derived from the earliest start and latest end
     across all scheduled meetings, so utilization reflects how much of
     the *active* meeting window each room is occupied.
+
+    Complexity: O(R + S), where R is rooms and S is scheduled meetings.
+    Memory: O(R + S) for the grouped duration table and merged result.
     """
     if rooms_df is None or rooms_df.empty or schedule_df is None or schedule_df.empty:
         return pd.DataFrame(columns=["room_id", "capacity", "booked_minutes", "utilization_pct"])
 
-    scheduled = schedule_df[schedule_df["status"] == "Scheduled"]
+    scheduled = schedule_df[schedule_df["status"] == "Scheduled"].copy()
     if scheduled.empty:
         result = rooms_df.copy()
         result["booked_minutes"] = 0
         result["utilization_pct"] = 0.0
         return result
 
-    day_start = min(scheduled["start_time"])
-    day_end = max(scheduled["end_time"])
-    day_span_minutes = max((day_end - day_start).total_seconds() / 60.0, 1.0)
+    # Reuse parser-created minute offsets so utilization is computed with
+    # vectorized integer math instead of per-row datetime subtraction.
+    if "start_minutes" not in scheduled.columns:
+        scheduled["start_minutes"] = scheduled["start_time"].map(time_to_minutes)
+    if "end_minutes" not in scheduled.columns:
+        scheduled["end_minutes"] = scheduled["end_time"].map(time_to_minutes)
 
-    rows = []
-    for _, room in rooms_df.iterrows():
-        room_meetings = scheduled[scheduled["assigned_room"] == room["room_id"]]
-        booked_minutes = sum(
-            (row["end_time"] - row["start_time"]).total_seconds() / 60.0
-            for _, row in room_meetings.iterrows()
-        )
-        utilization_pct = min((booked_minutes / day_span_minutes) * 100.0, 100.0)
-        rows.append(
-            {
-                "room_id": room["room_id"],
-                "capacity": room["capacity"],
-                "booked_minutes": booked_minutes,
-                "utilization_pct": utilization_pct,
-            }
-        )
+    day_span_minutes = max(
+        int(scheduled["end_minutes"].max()) - int(scheduled["start_minutes"].min()),
+        1,
+    )
+    scheduled["booked_minutes"] = scheduled["end_minutes"] - scheduled["start_minutes"]
 
-    return pd.DataFrame(rows)
+    booked_by_room = (
+        scheduled.groupby("assigned_room", sort=False)["booked_minutes"]
+        .sum()
+        .rename_axis("room_id")
+        .reset_index()
+    )
+
+    result = rooms_df.merge(booked_by_room, on="room_id", how="left")
+    result["booked_minutes"] = result["booked_minutes"].fillna(0)
+    result["utilization_pct"] = (result["booked_minutes"] / day_span_minutes * 100.0).clip(upper=100.0)
+    return result[["room_id", "capacity", "booked_minutes", "utilization_pct"]]
 
 
 def render_schedule_table():
@@ -782,31 +787,45 @@ def render_charts():
 
 
 def render_occupancy_heatmap(scheduled_df, rooms_df):
-    """Render a room-occupancy-by-time-slot heatmap using half-hour buckets."""
-    day_start = min(scheduled_df["start_time"]).replace(minute=0, second=0, microsecond=0)
-    day_end = max(scheduled_df["end_time"])
-    if day_end.minute > 0 or day_end.second > 0:
-        day_end = day_end.replace(minute=0, second=0) + timedelta(hours=1)
+    """
+    Render a room-occupancy-by-time-slot heatmap using half-hour buckets.
 
-    slot_length = timedelta(minutes=30)
-    slots = []
-    cursor = day_start
-    while cursor < day_end:
-        slots.append(cursor)
-        cursor += slot_length
+    Complexity: O(R + T + S), where T is visible half-hour slots and S is
+    scheduled meetings. Memory is O(R * T) for the displayed heatmap matrix.
+    """
+    scheduled_df = scheduled_df.copy()
+    if "start_minutes" not in scheduled_df.columns:
+        scheduled_df["start_minutes"] = scheduled_df["start_time"].map(time_to_minutes)
+    if "end_minutes" not in scheduled_df.columns:
+        scheduled_df["end_minutes"] = scheduled_df["end_time"].map(time_to_minutes)
+
+    first_start = int(scheduled_df["start_minutes"].min())
+    last_end = int(scheduled_df["end_minutes"].max())
+    day_start_minutes = (first_start // 60) * 60
+    day_end_minutes = ((last_end + 59) // 60) * 60
+
+    slot_minutes = 30
+    slot_offsets = list(range(day_start_minutes, day_end_minutes, slot_minutes))
+    day_start = min(scheduled_df["start_time"]).replace(minute=0, second=0, microsecond=0)
+    slots = [day_start + timedelta(minutes=offset - day_start_minutes) for offset in slot_offsets]
 
     room_ids = sorted(rooms_df["room_id"].tolist())
+    room_index = {room_id: idx for idx, room_id in enumerate(room_ids)}
     matrix = np.zeros((len(room_ids), len(slots)))
 
-    for r_idx, room_id in enumerate(room_ids):
-        room_meetings = scheduled_df[scheduled_df["assigned_room"] == room_id]
-        for s_idx, slot_start in enumerate(slots):
-            slot_end = slot_start + slot_length
-            occupied = any(
-                (row["start_time"] < slot_end) and (slot_start < row["end_time"])
-                for _, row in room_meetings.iterrows()
-            )
-            matrix[r_idx, s_idx] = 1 if occupied else 0
+    # Mark each meeting's occupied slot range directly instead of checking every
+    # room/slot/meeting combination. This preserves the same half-hour overlap
+    # semantics with substantially less repeated work.
+    for record in scheduled_df.to_dict("records"):
+        r_idx = room_index.get(record["assigned_room"])
+        if r_idx is None:
+            continue
+        start_idx = max(0, (int(record["start_minutes"]) - day_start_minutes) // slot_minutes)
+        end_idx = min(
+            len(slots),
+            (int(record["end_minutes"]) - day_start_minutes + slot_minutes - 1) // slot_minutes,
+        )
+        matrix[r_idx, start_idx:end_idx] = 1
 
     slot_labels = [s.strftime("%H:%M") for s in slots]
 
@@ -919,14 +938,19 @@ def compute_unused_capacity(rooms_df, scheduled_df):
 
 
 def compute_peak_hour(scheduled_df):
+    """Return the busiest starting hour in O(S) time and O(H) memory."""
     if scheduled_df is None or scheduled_df.empty:
         return "—"
 
-    hours = scheduled_df["start_time"].apply(lambda t: t.hour)
+    # Prefer cached minute offsets and fall back to datetimes for older data.
+    if "start_minutes" in scheduled_df.columns:
+        hours = scheduled_df["start_minutes"] // 60
+    else:
+        hours = scheduled_df["start_time"].apply(lambda t: t.hour)
     if hours.empty:
         return "—"
 
-    peak = hours.value_counts().idxmax()
+    peak = int(hours.value_counts().idxmax())
     return f"{peak:02d}:00 - {peak + 1:02d}:00"
 
 

@@ -27,24 +27,50 @@ from datetime import datetime
 import pandas as pd
 
 
+def _parse_hhmm(value):
+    """
+    Parse one HH:MM token into integer minutes.
+
+    The scheduler compares time ranges many times, so parsing once into a
+    compact integer avoids repeated datetime arithmetic during allocation.
+    """
+    hour_str, minute_str = value.strip().split(":")
+    hour = int(hour_str)
+    minute = int(minute_str)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError
+    return hour * 60 + minute
+
+
+def _minutes_to_datetime(minutes):
+    """Keep the existing arbitrary-date datetime output used by Plotly charts."""
+    return datetime(1900, 1, 1, minutes // 60, minutes % 60)
+
+
 def parse_time_range(time_str):
     """
-    Parse a 'HH:MM-HH:MM' string into two datetime objects (same arbitrary date).
+    Parse a 'HH:MM-HH:MM' string into datetimes and integer minute offsets.
 
-    Returns (start, end) or (None, None) if the string is malformed.
+    Returns (start, end, start_minutes, end_minutes) or
+    (None, None, None, None) if the string is malformed.
     """
     try:
         start_str, end_str = time_str.split("-")
-        start = datetime.strptime(start_str.strip(), "%H:%M")
-        end = datetime.strptime(end_str.strip(), "%H:%M")
-        return start, end
+        start_minutes = _parse_hhmm(start_str)
+        end_minutes = _parse_hhmm(end_str)
+        start = _minutes_to_datetime(start_minutes)
+        end = _minutes_to_datetime(end_minutes)
+        return start, end, start_minutes, end_minutes
     except (ValueError, AttributeError):
-        return None, None
+        return None, None, None, None
 
 
 def parse_dataset(raw_text):
     """
     Parse the raw dataset text into rooms and meetings DataFrames.
+
+    Complexity: O(N), where N is the number of non-empty dataset lines.
+    Memory: O(R + M) for parsed rooms and meetings.
 
     Parameters
     ----------
@@ -56,7 +82,8 @@ def parse_dataset(raw_text):
     tuple(pd.DataFrame, pd.DataFrame, list[str])
         rooms_df   -> columns: room_id, capacity
         meetings_df-> columns: meeting_id, department, attendees,
-                                time_slot, start_time, end_time
+                                time_slot, start_time, end_time,
+                                start_minutes, end_minutes
         errors     -> list of human-readable parsing error messages
     """
     errors = []
@@ -153,7 +180,7 @@ def parse_dataset(raw_text):
                 )
                 continue
 
-            start, end = parse_time_range(time_str)
+            start, end, start_minutes, end_minutes = parse_time_range(time_str)
             if start is None or end is None:
                 errors.append(
                     f"Line {line_no}: Invalid time format '{time_str}' for meeting "
@@ -161,7 +188,7 @@ def parse_dataset(raw_text):
                 )
                 continue
 
-            if end <= start:
+            if end_minutes <= start_minutes:
                 errors.append(
                     f"Line {line_no}: End time must be after start time for meeting "
                     f"'{meeting_id}'."
@@ -177,6 +204,8 @@ def parse_dataset(raw_text):
                     "time_slot": time_str,
                     "start_time": start,
                     "end_time": end,
+                    "start_minutes": start_minutes,
+                    "end_minutes": end_minutes,
                 }
             )
 
@@ -196,6 +225,8 @@ def parse_dataset(raw_text):
             "time_slot",
             "start_time",
             "end_time",
+            "start_minutes",
+            "end_minutes",
         ],
     )
 
@@ -205,6 +236,9 @@ def parse_dataset(raw_text):
 def validate_dataset(rooms_df, meetings_df):
     """
     Perform dataset-level (cross-record) validation after initial parsing.
+
+    Complexity: O(M), after O(1) max-capacity lookup from the rooms DataFrame.
+    Memory: O(K), where K is the number of validation messages returned.
 
     Parameters
     ----------
