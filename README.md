@@ -166,3 +166,6 @@ meeting-room-allocator/
 - Persist datasets and schedules between sessions (optional local DB)
 - Support CSV/JSON dataset uploads in addition to `.txt`
 - Add per-department utilization breakdowns and cost estimates
+
+## Deployed Link 
+https://roomsync-kz93vdlj3ritgr7pnnc9v3.streamlit.app/
