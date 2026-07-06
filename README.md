@@ -48,10 +48,10 @@ algorithm that avoids double-booking rooms, and gives you:
 
 > _Add screenshots of the dashboard here once you've run the app locally._
 
-`C:\Users\HP\Desktop\RoomSync\docs\Screenshot 2026-07-06 092920.png`
-`C:\Users\HP\Desktop\RoomSync\docs\Screenshot 2026-07-06 092954.png`
-`C:\Users\HP\Desktop\RoomSync\docs\Screenshot 2026-07-06 093009.png`
-`C:\Users\HP\Desktop\RoomSync\docs\Screenshot 2026-07-06 093035.png`
+`docs\Screenshot 2026-07-06 092920.png`
+`docs\Screenshot 2026-07-06 092954.png`
+`docs\Screenshot 2026-07-06 093009.png`
+`docs\Screenshot 2026-07-06 093035.png`
 
 ---
 
