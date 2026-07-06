@@ -46,12 +46,13 @@ algorithm that avoids double-booking rooms, and gives you:
 
 ## Screenshots
 
-> _Add screenshots of the dashboard here once you've run the app locally._
+![Dashboard view 1](docs/Screenshot%202026-07-06%20092920.png)
 
-`docs\Screenshot 2026-07-06 092920.png`
-`docs\Screenshot 2026-07-06 092954.png`
-`docs\Screenshot 2026-07-06 093009.png`
-`docs\Screenshot 2026-07-06 093035.png`
+![Dashboard view 2](docs/Screenshot%202026-07-06%20092954.png)
+
+![Dashboard view 3](docs/Screenshot%202026-07-06%20093009.png)
+
+![Dashboard view 4](docs/Screenshot%202026-07-06%20093035.png)
 
 ---
 
