@@ -136,9 +136,11 @@ The allocator uses a **Best-Fit Greedy** strategy:
    enough exists" or "all suitable rooms are already booked").
 
 This greedy approach keeps larger rooms free for meetings that actually
-need them, while running in approximately **O(M × R)** time, where `M`
-is the number of meetings and `R` is the number of rooms — well within
-the needs of a single-user local tool.
+need them. The optimized implementation sorts rooms and meetings in
+**O(R log R + M log M)**, uses binary search to skip undersized rooms,
+and checks room booking overlaps in **O(log B)** for `B` bookings in a
+candidate room. Worst-case allocation can still scan many feasible rooms,
+but it avoids the previous linear booking scan.
 
 A secondary consistency check (`detect_conflicts` in `scheduler.py`)
 independently re-scans the final schedule to confirm no room ended up
@@ -168,3 +170,6 @@ meeting-room-allocator/
 - Persist datasets and schedules between sessions (optional local DB)
 - Support CSV/JSON dataset uploads in addition to `.txt`
 - Add per-department utilization breakdowns and cost estimates
+
+## Deployed Link 
+https://roomsync-kz93vdlj3ritgr7pnnc9v3.streamlit.app/
