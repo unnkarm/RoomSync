@@ -124,27 +124,70 @@ M005,Sales,12,11:00-12:00
 
 ## Scheduling Algorithm Explanation
 
-The allocator uses a **Best-Fit Greedy** strategy:
+The allocator now uses an **Optimized Best-Fit Greedy** strategy with
+capacity buckets, a min-heap for idle-room tracking, and binary-search-based
+overlap checks.
 
-1. **Sort rooms by capacity**, ascending — smallest room first.
+1. **Sort rooms by capacity** and group them into capacity buckets.
 2. **Sort meetings chronologically** by start time.
-3. For each meeting, walk through the sorted rooms and assign the
-   **first (smallest) room** that:
-   - has capacity ≥ the meeting's attendee count, **and**
-   - has no existing booking that overlaps the meeting's time slot.
-4. If no room satisfies both conditions, the meeting is recorded as a
-   **conflict**, along with a specific reason (either "no room large
-   enough exists" or "all suitable rooms are already booked").
+3. For each meeting, find the **smallest sufficient capacity bucket**
+   that can fit the attendees.
+4. Within that bucket, use the heap/booking structure to quickly find a
+   room whose previous bookings have already finished before the new
+   meeting starts.
+5. If no room satisfies both capacity and overlap constraints, the meeting
+   is marked as a **conflict** with a reason such as insufficient room
+   capacity or all suitable rooms already being booked.
 
-This greedy approach keeps larger rooms free for meetings that actually
-need them. The optimized implementation sorts rooms and meetings in
-**O(R log R + M log M)**, uses binary search to skip undersized rooms,
-and checks room booking overlaps in **O(log B)** for `B` bookings in a
-candidate room. Worst-case allocation can still scan many feasible rooms,
-but it avoids the previous linear booking scan.
+### Latest algorithm
+
+The current implementation in `scheduler.py` is a **capacity-indexed
+best-fit greedy scheduler**. It is deterministic, fast for interactive use,
+and preserves a clear explanation of why each meeting was assigned or rejected.
+
+### Latest time complexity
+
+The full scheduling pipeline now runs in approximately:
+
+- **O(R log R)** for room preprocessing and ordering
+- **O(M log M)** for meeting preprocessing and chronological sorting
+- **O(M log R)** for the allocation loop in practice
+
+So the latest overall time complexity is:
+
+**O(R log R + M log M + M log R)**
+
+### Latest space complexity
+
+The scheduler uses:
+
+- **O(R + M)** space for the room state, meeting records, and schedule/conflict
+  outputs
+
+If you include the dashboard heatmap/visualization layer, the UI can use
+additional temporary space proportional to the displayed time grid, but the
+core scheduling logic remains **O(R + M)**.
+
+### Three strong approaches for this problem
+
+| Approach | Core idea | Time complexity | Space complexity | Why it works / trade-off |
+| --- | --- | --- | --- | --- |
+| Optimized Best-Fit Greedy (chosen) | Assign each meeting to the smallest feasible room while avoiding overlaps | O(R log R + M log M + M log R) | O(R + M) | Fast, deterministic, and easy to explain; ideal for a live dashboard and large practical datasets. |
+| Integer Programming / CP-SAT | Model each meeting-room assignment as a binary decision and enforce capacity/overlap constraints | Exponential worst-case, often practical for small/medium instances | O(V + E) for the model size | Gives exact optimum when needed, but is slower and heavier for interactive use. |
+| Graph-based / Flow-based scheduling | Treat meetings as intervals and rooms as resources in a conflict graph or network flow model | Roughly O(M^2) for simple graph formulations, or higher for flow implementations | O(M + R) to O(VE) depending on formulation | Strong for structured variants, but more complex to implement and less natural for arbitrary meeting lengths and room capacities. |
+
+### Why this method was selected
+
+The **optimized best-fit greedy** approach was chosen because it offers the
+best trade-off for this project:
+
+- it produces high-quality schedules quickly,
+- it is easy to reason about and maintain,
+- it scales well for interactive Streamlit usage,
+- and it keeps the implementation simple enough for a single-user local app.
 
 A secondary consistency check (`detect_conflicts` in `scheduler.py`)
-independently re-scans the final schedule to confirm no room ended up
+independently re-scans the final schedule to confirm that no room ended up
 double-booked, acting as a safety net on top of the allocation pass.
 
 ---

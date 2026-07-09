@@ -1,50 +1,71 @@
 """
 scheduler.py
 
-Implements the Best-Fit Greedy Scheduling Algorithm for the
-Meeting Room Allocation System.
+Algorithm Used:
+- Optimized Best-Fit Greedy Scheduling
+- Capacity-indexed room groups
+- Min-Heap based room availability
 
-Algorithm overview
+Time Complexity:
+- Parsing: O(N)
+- Sorting Rooms: O(R log R)
+- Sorting Meetings: O(M log M)
+- Allocation: Target approximately O(M log R)
+
+Space Complexity:
+- O(R + M)
+
+Implements the Best-Fit Greedy Scheduling Algorithm for the Meeting Room
+Allocation System.
+
+Scheduling workflow
 -------------------
-1. Sort rooms by capacity (ascending).
+1. Sort rooms by capacity and group them into capacity-indexed buckets.
 2. Sort meetings chronologically by precomputed start minute.
-3. Use bisect_left() to skip rooms that are too small, then scan feasible
-   rooms from smallest to largest to preserve best-fit greedy behavior.
-4. Keep each room's bookings sorted by start minute and use binary search to
-   check only the neighboring bookings that can overlap.
+3. For each meeting, binary-search the smallest capacity bucket that can fit
+   the attendee count (best-fit starts at the minimum sufficient capacity).
+4. Within each bucket, use a min-heap keyed by (max_end, order_index) to
+   quickly find rooms that are already idle before the meeting start; fall
+   back to a deterministic order_index scan with O(log B) overlap checks when
+   every room still has a booking ending after the meeting start.
 5. If no suitable room is found, record the meeting as a conflict.
 
-Complexity
-----------
-Let M be meetings, R be rooms, F be the number of capacity-feasible rooms
-checked for a meeting, and B be bookings in a checked room.
-
-Sorting costs O(R log R + M log M). Allocation costs
-O(sum(F * log B)) after the O(log R) capacity lower-bound lookup for each
-meeting. Worst case remains O(M * R * log M), but the previous linear booking
-scan O(B) is reduced to O(log B), and undersized rooms are skipped with binary
-search instead of repeated per-room checks. Memory is O(R + M).
+Why these data structures
+-------------------------
+- Capacity buckets + bisect_left: skip undersized rooms in O(log C) time,
+  where C is the number of distinct capacities (C <= R).
+- Per-room sorted booking lists: meetings are processed in nondecreasing start
+  order, so appending keeps intervals sorted and enables O(log B) overlap checks
+  via bisect on neighboring bookings only.
+- Min-heap per capacity bucket: rooms with max_end <= meeting_start are provably
+  free (all prior bookings ended), so the heap surfaces idle rooms in O(log R)
+  time instead of scanning every peer in the bucket.
+- order_index tie-breaking: preserves deterministic best-fit output when several
+  rooms share the same capacity.
 """
 
+from __future__ import annotations
+
+import heapq
 from bisect import bisect_left
-from collections import defaultdict
-from dataclasses import dataclass
-from typing import Any, DefaultDict, List, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
 
 @dataclass(frozen=True)
 class RoomOption:
-    """A compact room record avoids repeated pandas row access in hot loops."""
+    """Compact room record avoids repeated pandas row access in hot loops."""
 
     room_id: Any
     capacity: int
+    order_index: int
 
 
 @dataclass(frozen=True)
 class MeetingRequest:
-    """A compact meeting record caches fields used repeatedly by allocation."""
+    """Compact meeting record caches fields used repeatedly by allocation."""
 
     meeting_id: Any
     department: Any
@@ -56,6 +77,163 @@ class MeetingRequest:
     end_minutes: int
 
 
+@dataclass
+class RoomState:
+    """
+    Mutable per-room scheduling state.
+
+    max_end tracks the latest booking end across the room. When a new meeting
+    starts at or after max_end, every existing booking has already finished, so
+    the room is available without an overlap scan.
+    """
+
+    room_id: Any
+    capacity: int
+    order_index: int
+    bookings: List[Tuple[int, int]] = field(default_factory=list)
+    starts: List[int] = field(default_factory=list)
+    max_end: int = 0
+
+
+class CapacityBucket:
+    """
+    Rooms that share one capacity value.
+
+    The availability heap orders rooms by (max_end, order_index, room_id).
+    max_end acts as each room's next-available boundary: if a meeting starts
+    at or after max_end, the room is idle. order_index preserves deterministic
+    best-fit tie-breaking among rooms of equal capacity.
+
+    Complexity
+    ----------
+    find_available: O(B log H + H log H) worst case, where B is rooms in the
+    bucket and H is heap size; often O(log H) when a heap fast-path hit occurs.
+    assign: O(log B) for heap push plus O(1) append to sorted booking lists.
+    """
+
+    __slots__ = ("capacity", "_rooms", "_room_order", "_availability_heap")
+
+    def __init__(self, capacity: int, rooms: Sequence[RoomState]) -> None:
+        self.capacity = capacity
+        self._rooms: Dict[Any, RoomState] = {room.room_id: room for room in rooms}
+        self._room_order = sorted(rooms, key=lambda room: room.order_index)
+        self._availability_heap: List[Tuple[int, int, Any]] = []
+        for room in self._room_order:
+            self._push_heap_entry(room)
+
+    def _push_heap_entry(self, room: RoomState) -> None:
+        heapq.heappush(
+            self._availability_heap,
+            (room.max_end, room.order_index, room.room_id),
+        )
+
+    def find_available(self, start: int, end: int) -> Optional[RoomState]:
+        """
+        Return the first available room in best-fit tie order for [start, end).
+
+        Phase 1 (heap): collect idle rooms with max_end <= start and pick the
+        smallest order_index among them.
+        Phase 2 (scan): walk remaining rooms in order_index order and use binary
+        search overlap detection for rooms that may still have a gap.
+        """
+        deferred: List[Tuple[int, int, Any]] = []
+        chosen: Optional[RoomState] = None
+
+        while self._availability_heap and self._availability_heap[0][0] <= start:
+            max_end, order_index, room_id = heapq.heappop(self._availability_heap)
+            room = self._rooms[room_id]
+
+            if room.max_end != max_end:
+                self._push_heap_entry(room)
+                continue
+
+            deferred.append((order_index, max_end, room_id))
+
+        if deferred:
+            deferred.sort(key=lambda item: (item[0], item[2]))
+            _, _, chosen_id = deferred[0]
+            chosen = self._rooms[chosen_id]
+
+            for order_index, max_end, room_id in deferred[1:]:
+                heapq.heappush(
+                    self._availability_heap,
+                    (max_end, order_index, room_id),
+                )
+            return chosen
+
+        for room in self._room_order:
+            if room.max_end <= start:
+                return room
+            if not _has_overlap(room.starts, room.bookings, start, end):
+                return room
+
+        return None
+
+    def assign(self, room: RoomState, start: int, end: int) -> None:
+        """Record a booking and refresh the room's heap entry."""
+        room.bookings.append((start, end))
+        room.starts.append(start)
+        room.max_end = max(room.max_end, end)
+        self._push_heap_entry(room)
+
+
+class BestFitScheduler:
+    """
+    Capacity-indexed best-fit greedy scheduler.
+
+    Complexity
+    ----------
+    Construction: O(R log R) for sorting and bucket creation.
+    schedule_all: O(M log M + M * (log R + average bucket work)).
+    """
+
+    __slots__ = ("_capacities", "_buckets", "_max_capacity")
+
+    def __init__(self, rooms: Sequence[RoomOption]) -> None:
+        bucket_map: Dict[int, List[RoomState]] = {}
+        for room in rooms:
+            bucket_map.setdefault(room.capacity, []).append(
+                RoomState(
+                    room_id=room.room_id,
+                    capacity=room.capacity,
+                    order_index=room.order_index,
+                )
+            )
+
+        self._capacities = sorted(bucket_map)
+        self._buckets = {
+            capacity: CapacityBucket(capacity, bucket_map[capacity])
+            for capacity in self._capacities
+        }
+        self._max_capacity = self._capacities[-1] if self._capacities else 0
+
+    @property
+    def max_capacity(self) -> int:
+        return self._max_capacity
+
+    def has_capacity_for(self, attendees: int) -> bool:
+        """True when at least one room meets the attendee requirement."""
+        return bisect_left(self._capacities, attendees) < len(self._capacities)
+
+    def assign(self, meeting: MeetingRequest) -> Optional[Tuple[Any, int]]:
+        """
+        Assign one meeting to the smallest sufficient available room.
+
+        Returns (room_id, capacity) on success, otherwise None.
+        Complexity: O(log R + B) where B is rooms checked in visited buckets.
+        """
+        first_feasible = bisect_left(self._capacities, meeting.attendees)
+
+        for capacity in self._capacities[first_feasible:]:
+            bucket = self._buckets[capacity]
+            room = bucket.find_available(meeting.start_minutes, meeting.end_minutes)
+            if room is not None:
+                bucket.assign(room, meeting.start_minutes, meeting.end_minutes)
+                return room.room_id, room.capacity
+
+        return None
+
+
 def _time_to_minutes(value):
     """Fallback for older DataFrames that do not yet include minute columns."""
     return value.hour * 60 + value.minute
@@ -65,9 +243,7 @@ def _meeting_records(meetings_df):
     """
     Convert meeting rows once before scheduling.
 
-    This avoids repeated Series lookups inside the allocation loop and keeps
-    backward compatibility with DataFrames created before start_minutes and
-    end_minutes were added by the parser.
+    Complexity: O(M log M) for chronological sorting plus O(M) conversion.
     """
     if meetings_df is None or meetings_df.empty:
         return []
@@ -98,14 +274,21 @@ def _meeting_records(meetings_df):
 
 
 def _room_options(rooms_df):
-    """Sort rooms once and expose parallel capacities for bisect_left()."""
-    rooms_sorted = rooms_df.sort_values(by="capacity", ascending=True)
+    """
+    Sort rooms once and assign stable order_index values for tie-breaking.
+
+    Complexity: O(R log R).
+    """
+    rooms_sorted = rooms_df.sort_values(by="capacity", ascending=True, kind="mergesort")
     rooms = [
-        RoomOption(room_id=record["room_id"], capacity=int(record["capacity"]))
-        for record in rooms_sorted.to_dict("records")
+        RoomOption(
+            room_id=record["room_id"],
+            capacity=int(record["capacity"]),
+            order_index=index,
+        )
+        for index, record in enumerate(rooms_sorted.to_dict("records"))
     ]
-    capacities = [room.capacity for room in rooms]
-    return rooms, capacities
+    return rooms
 
 
 def _has_overlap(starts: Sequence[int], bookings: Sequence[Tuple[int, int]], start: int, end: int) -> bool:
@@ -114,8 +297,7 @@ def _has_overlap(starts: Sequence[int], bookings: Sequence[Tuple[int, int]], sta
 
     In a start-sorted interval list, only the booking immediately before the
     insertion point and the booking at the insertion point can overlap a new
-    interval. All earlier bookings end no later than the previous neighbor, and
-    all later bookings start after the next neighbor.
+    interval.
     """
     insert_at = bisect_left(starts, start)
 
@@ -158,7 +340,7 @@ def _build_conflict_row(meeting, reason):
 
 def schedule_meetings(rooms_df, meetings_df):
     """
-    Run the best-fit greedy scheduling algorithm.
+    Run the optimized best-fit greedy scheduling algorithm.
 
     Parameters
     ----------
@@ -173,6 +355,8 @@ def schedule_meetings(rooms_df, meetings_df):
     tuple(pd.DataFrame, pd.DataFrame)
         schedule_df  -> one row per meeting, with assigned room and status
         conflicts_df -> one row per unscheduled meeting, with a reason
+
+    Complexity: O(R log R + M log M + M log R) target for the full pipeline.
     """
     schedule_rows = []
     conflict_rows = []
@@ -180,39 +364,15 @@ def schedule_meetings(rooms_df, meetings_df):
     if rooms_df is None or rooms_df.empty or meetings_df is None or meetings_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    rooms, capacities = _room_options(rooms_df)
+    rooms = _room_options(rooms_df)
     meetings = _meeting_records(meetings_df)
-    max_capacity = capacities[-1] if capacities else 0
-
-    # defaultdict removes repeated setup checks while preserving one sorted
-    # booking list per room. Starts are kept separately for fast bisect lookups.
-    room_bookings: DefaultDict[Any, List[Tuple[int, int]]] = defaultdict(list)
-    room_booking_starts: DefaultDict[Any, List[int]] = defaultdict(list)
+    scheduler = BestFitScheduler(rooms)
 
     for meeting in meetings:
-        assigned_room = None
-        assigned_capacity = None
+        assignment = scheduler.assign(meeting)
 
-        # Capacity lower-bound search skips every room that cannot ever fit the
-        # meeting, while the following scan keeps the original best-fit order.
-        first_feasible = bisect_left(capacities, meeting.attendees)
-
-        for room in rooms[first_feasible:]:
-            starts = room_booking_starts[room.room_id]
-            bookings = room_bookings[room.room_id]
-
-            if _has_overlap(starts, bookings, meeting.start_minutes, meeting.end_minutes):
-                continue
-
-            assigned_room = room.room_id
-            assigned_capacity = room.capacity
-            break
-
-        if assigned_room is not None:
-            # Meetings are processed by nondecreasing start time, so appending
-            # keeps each room schedule sorted without paying O(B) insertion cost.
-            room_bookings[assigned_room].append((meeting.start_minutes, meeting.end_minutes))
-            room_booking_starts[assigned_room].append(meeting.start_minutes)
+        if assignment is not None:
+            assigned_room, assigned_capacity = assignment
             schedule_rows.append(
                 _build_schedule_row(
                     meeting,
@@ -222,7 +382,11 @@ def schedule_meetings(rooms_df, meetings_df):
                 )
             )
         else:
-            reason = _determine_conflict_reason(meeting, first_feasible < len(rooms), max_capacity)
+            reason = _determine_conflict_reason(
+                meeting,
+                scheduler.has_capacity_for(meeting.attendees),
+                scheduler.max_capacity,
+            )
             conflict_rows.append(_build_conflict_row(meeting, reason))
             schedule_rows.append(
                 _build_schedule_row(
@@ -284,8 +448,6 @@ def detect_conflicts(schedule_df):
     if scheduled.empty:
         return issues
 
-    # Minute columns make conflict verification integer-based. The fallback
-    # keeps compatibility with schedules produced before this optimization.
     if "start_minutes" not in scheduled.columns:
         scheduled["start_minutes"] = scheduled["start_time"].map(_time_to_minutes)
     if "end_minutes" not in scheduled.columns:

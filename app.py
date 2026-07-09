@@ -764,24 +764,7 @@ def render_charts():
         else:
             st.info("No utilization data available yet.")
 
-    # --- Row 3: Timeline ---------------------------------------------------
-    if not scheduled.empty:
-        timeline_df = scheduled.copy()
-        timeline_df["Room"] = timeline_df["assigned_room"]
-        fig_timeline = px.timeline(
-            timeline_df,
-            x_start="start_time",
-            x_end="end_time",
-            y="Room",
-            color="department",
-            hover_data={"meeting_id": True, "attendees": True},
-            labels={"department": "Department"},
-        )
-        fig_timeline.update_yaxes(autorange="reversed")
-        apply_dark_layout(fig_timeline, "Meetings Throughout the Day")
-        st.plotly_chart(fig_timeline, use_container_width=True)
-
-    # --- Row 4: Heatmap ------------------------------------------------
+    # --- Row 3: Heatmap ------------------------------------------------
     if not scheduled.empty and rooms_df is not None and not rooms_df.empty:
         render_occupancy_heatmap(scheduled, rooms_df)
 
