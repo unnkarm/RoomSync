@@ -139,13 +139,13 @@ overlap checks.
    is marked as a **conflict** with a reason such as insufficient room
    capacity or all suitable rooms already being booked.
 
-### Latest algorithm
+### Algorithm
 
 The current implementation in `scheduler.py` is a **capacity-indexed
 best-fit greedy scheduler**. It is deterministic, fast for interactive use,
 and preserves a clear explanation of why each meeting was assigned or rejected.
 
-### Latest time complexity
+### Time complexity
 
 The full scheduling pipeline now runs in approximately:
 
@@ -157,7 +157,7 @@ So the latest overall time complexity is:
 
 **O(R log R + M log M + M log R)**
 
-### Latest space complexity
+### Space complexity
 
 The scheduler uses:
 
