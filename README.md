@@ -46,13 +46,15 @@ algorithm that avoids double-booking rooms, and gives you:
 
 ## Screenshots
 
-![Dashboard view 1](docs/Screenshot%202026-07-06%20092920.png)
+![Dashboard view 1](docs/Screenshot%202026-07-09%20184358.png)
 
-![Dashboard view 2](docs/Screenshot%202026-07-06%20092954.png)
+![Dashboard view 2](docs/Screenshot%202026-07-09%20184415.png)
 
-![Dashboard view 3](docs/Screenshot%202026-07-06%20093009.png)
+![Dashboard view 3](docs/Screenshot%202026-07-09%20184433.png)
 
-![Dashboard view 4](docs/Screenshot%202026-07-06%20093035.png)
+![Dashboard view 4](docs/Screenshot%202026-07-09%20184547.png)
+
+![Dashboard view 5](docs/Screenshot%202026-07-09%20184559.png)
 
 ---
 
